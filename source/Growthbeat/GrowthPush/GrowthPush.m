@@ -36,6 +36,7 @@ static const NSTimeInterval kGPRegisterPollingInterval = 5.0f;
 @property (nonatomic, strong) NSString *token;
 @property (nonatomic, strong) GBClient *growthbeatClient;
 @property (nonatomic, strong) GPClient *client;
+@property (nonatomic, strong) NSMutableArray *listeners;
 @property (nonatomic, assign) BOOL registeringClient;
 
 @end
@@ -51,6 +52,7 @@ static const NSTimeInterval kGPRegisterPollingInterval = 5.0f;
 @synthesize token;
 @synthesize growthbeatClient;
 @synthesize client;
+@synthesize listeners;
 @synthesize registeringClient;
 
 + (instancetype) sharedInstance {
@@ -72,8 +74,23 @@ static const NSTimeInterval kGPRegisterPollingInterval = 5.0f;
         self.httpClient = [[GBHttpClient alloc] initWithBaseUrl:[NSURL URLWithString:kGBHttpClientDefaultBaseUrl] timeout:kGBHttpClientDefaultTimeout];
         self.preference = [[GBPreference alloc] initWithFileName:kGBPreferenceDefaultFileName];
         self.environment = GPEnvironmentUnknown;
+        self.listeners = [NSMutableArray array];
+        [self addObserver:self forKeyPath:@"client" options:NSKeyValueObservingOptionNew context:nil];
     }
     return self;
+}
+
+- (void)dealloc {
+    [self removeObserver:self forKeyPath:@"client"];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSString *,id> *)change context:(void *)context {
+    if ([keyPath isEqualToString:@"client"] && self.client != nil) {
+        for (void (^listener)() in self.listeners) {
+            listener();
+        }
+        [self.listeners removeAllObjects];
+    }
 }
 
 - (void) initializeWithApplicationId:(NSString *)applicationId credentialId:(NSString *)newCredentialId {
@@ -251,16 +268,21 @@ static const NSTimeInterval kGPRegisterPollingInterval = 5.0f;
             [self.logger info:@"Tag exists with the other value. (name: %@, value: %@)", name, value];
         }
 
-        [self waitClient];
-        GPTag *tag = [GPTag createWithGrowthbeatClient:self.growthbeatClient.id credentialId:self.credentialId name:name value:value];
-
-        if (tag) {
-            [GPTag save:tag name:name];
-            [self.logger info:@"Setting tag success. (name: %@)", name];
+        void (^completion)() = ^{
+            GPTag *tag = [GPTag createWithGrowthbeatClient:self.growthbeatClient.id credentialId:self.credentialId name:name value:value];
+            
+            if (tag) {
+                [GPTag save:tag name:name];
+                [self.logger info:@"Setting tag success. (name: %@)", name];
+            }
+        };
+        
+        if (self.client != nil) {
+            completion();
+        } else {
+            [self.listeners addObject:completion];
         }
-
     });
-
 }
 
 - (void) trackEvent:(NSString *)name {
